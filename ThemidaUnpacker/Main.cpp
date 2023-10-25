@@ -3,79 +3,116 @@
 #include <tchar.h>
 #include <iostream>
 #include <string>
+#include <shlwapi.h> // for PathFileExists
 
-bool SuspendProcess(DWORD dwProcessId) {
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (hSnapshot == INVALID_HANDLE_VALUE) {
+/*bool SuspendThreadsByProcessID(DWORD processId) {
+    HANDLE threadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (threadSnapshot == INVALID_HANDLE_VALUE) {
         return false;
     }
 
-    THREADENTRY32 te32;
-    te32.dwSize = sizeof(THREADENTRY32);
-    if (!Thread32First(hSnapshot, &te32)) {
-        CloseHandle(hSnapshot);
-        return false;
-    }
-
-    do {
-        if (te32.th32OwnerProcessID == dwProcessId) {
-            HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, te32.th32ThreadID);
-            if (hThread != NULL) {
-                SuspendThread(hThread);
-                CloseHandle(hThread);
-            }
-        }
-    } while (Thread32Next(hSnapshot, &te32));
-
-    CloseHandle(hSnapshot);
-    return true;
-}
-
-bool ResumeProcess(DWORD dwProcessId) {
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (hSnapshot == INVALID_HANDLE_VALUE) {
-        return false;
-    }
-
-    THREADENTRY32 te32;
-    te32.dwSize = sizeof(THREADENTRY32);
-    if (!Thread32First(hSnapshot, &te32)) {
-        CloseHandle(hSnapshot);
+    THREADENTRY32 threadEntry;
+    threadEntry.dwSize = sizeof(THREADENTRY32);
+    if (!Thread32First(threadSnapshot, &threadEntry)) {
+        CloseHandle(threadSnapshot);
         return false;
     }
 
     do {
-        if (te32.th32OwnerProcessID == dwProcessId) {
-            HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, te32.th32ThreadID);
-            if (hThread != NULL) {
-                while (ResumeThread(hThread) > 0) {}
-                CloseHandle(hThread);
+        if (threadEntry.th32OwnerProcessID == processId) {
+            HANDLE threadHandle = OpenThread(THREAD_SUSPEND_RESUME, FALSE, threadEntry.th32ThreadID);
+            if (threadHandle != NULL) {
+                SuspendThread(threadHandle);
+                CloseHandle(threadHandle);
             }
         }
-    } while (Thread32Next(hSnapshot, &te32));
+    } while (Thread32Next(threadSnapshot, &threadEntry));
 
-    CloseHandle(hSnapshot);
+    CloseHandle(threadSnapshot);
     return true;
 }
 
-bool HasLoadedClrjitDLL(DWORD dwProcessId) {
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, dwProcessId);
-    if (hSnapshot == INVALID_HANDLE_VALUE) {
+bool ResumeThreadsByProcessID(DWORD processId) {
+    HANDLE threadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (threadSnapshot == INVALID_HANDLE_VALUE) {
         return false;
     }
 
-    MODULEENTRY32 me32;
-    me32.dwSize = sizeof(MODULEENTRY32);
-    if (Module32First(hSnapshot, &me32)) {
+    THREADENTRY32 threadEntry;
+    threadEntry.dwSize = sizeof(THREADENTRY32);
+    if (!Thread32First(threadSnapshot, &threadEntry)) {
+        CloseHandle(threadSnapshot);
+        return false;
+    }
+
+    do {
+        if (threadEntry.th32OwnerProcessID == processId) {
+            HANDLE threadHandle = OpenThread(THREAD_SUSPEND_RESUME, FALSE, threadEntry.th32ThreadID);
+            if (threadHandle != NULL) {
+                while (ResumeThread(threadHandle) > 0) {}
+                CloseHandle(threadHandle);
+            }
+        }
+    } while (Thread32Next(threadSnapshot, &threadEntry));
+
+    CloseHandle(threadSnapshot);
+    return true;
+}
+*/
+
+
+bool ModifyThreadsByProcessID(DWORD processId, bool suspend) {
+    DWORD desiredAccess = suspend ? THREAD_SUSPEND_RESUME : THREAD_RESUME;
+
+    HANDLE threadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (threadSnapshot == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    THREADENTRY32 threadEntry;
+    threadEntry.dwSize = sizeof(THREADENTRY32);
+    if (!Thread32First(threadSnapshot, &threadEntry)) {
+        CloseHandle(threadSnapshot);
+        return false;
+    }
+
+    do {
+        if (threadEntry.th32OwnerProcessID == processId) {
+            HANDLE threadHandle = OpenThread(desiredAccess, FALSE, threadEntry.th32ThreadID);
+            if (threadHandle != NULL) {
+                if (suspend) {
+                    SuspendThread(threadHandle);
+                }
+                else {
+                    while (ResumeThread(threadHandle) > 0) {}
+                }
+                CloseHandle(threadHandle);
+            }
+        }
+    } while (Thread32Next(threadSnapshot, &threadEntry));
+
+    CloseHandle(threadSnapshot);
+    return true;
+}
+
+bool IsClrjitDLLLoaded(DWORD processId) {
+    HANDLE moduleSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, processId);
+    if (moduleSnapshot == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    MODULEENTRY32 moduleEntry;
+    moduleEntry.dwSize = sizeof(MODULEENTRY32);
+    if (Module32First(moduleSnapshot, &moduleEntry)) {
         do {
-            if (_tcsicmp(me32.szModule, _T("clrjit.dll")) == 0) {
-                CloseHandle(hSnapshot);
+            if (_tcsicmp(moduleEntry.szModule, _T("clrjit.dll")) == 0) {
+                CloseHandle(moduleSnapshot);
                 return true;
             }
-        } while (Module32Next(hSnapshot, &me32));
+        } while (Module32Next(moduleSnapshot, &moduleEntry));
     }
 
-    CloseHandle(hSnapshot);
+    CloseHandle(moduleSnapshot);
     return false;
 }
 
@@ -87,17 +124,19 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // The first command-line argument (argv[1]) contains the path to the target file.
-    _TCHAR path[MAX_PATH];
-    _stprintf_s(path, _T("%S"), argv[1]);
+    bool suspendThreads = true; // Define the variable here
 
-    _TCHAR pd_path[MAX_PATH] = _T("");
+    // The first command-line argument (argv[1]) contains the path to the target file.
+    _TCHAR targetPath[MAX_PATH];
+    _stprintf_s(targetPath, _T("%S"), argv[1]);
+
+    _TCHAR pdPath[MAX_PATH] = _T("");
 
     OPENFILENAME ofn;
     ZeroMemory(&ofn, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
     ofn.lpstrFilter = _T("PD File (pd.exe)\0pd.exe\0");
-    ofn.lpstrFile = pd_path;
+    ofn.lpstrFile = pdPath;
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrTitle = _T("Select pd.exe");
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
@@ -107,35 +146,50 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    int pid;
+    int processId;
     STARTUPINFO si;
     PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof(si));
     ZeroMemory(&pi, sizeof(pi));
 
-    if (CreateProcess(path, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-        pid = pi.dwProcessId;
+    if (CreateProcess(targetPath, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        processId = pi.dwProcessId;
         std::wcout << L"WAIT..." << std::endl;
         while (true) {
-            if (HasLoadedClrjitDLL(pid)) {
-                SuspendProcess(pid);
+            if (IsClrjitDLLLoaded(processId)) {
+                ModifyThreadsByProcessID(processId, suspendThreads);
                 std::wcout << L"Found clrjit.dll -> LOADED .NET" << std::endl;
-                if (MessageBox(nullptr, _T("May I AutoDump?"), _T("Question"), MB_YESNO) == IDYES) {
+                if (true) {
                     _TCHAR cmdLine[MAX_PATH];
-                    _stprintf_s(cmdLine, _T("\"%s\" -pid %d"), pd_path, pid);
-                    CreateProcess(pd_path, cmdLine, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
-                    MessageBox(nullptr, _T("DUMPED! If an error occurs, please dump it manually"), _T("Info"), MB_OK);
-                    TerminateProcess(pi.hProcess, 0);
-                    CloseHandle(pi.hProcess);
-                    CloseHandle(pi.hThread);
-                    return 0;
-                }
-                else {
-                    //MessageBox(nullptr, _T("DUMP IT with SCYLLA! ") + _T(PathFindFileName(path)) + _T(" PID: ") + std::to_wstring(pid) + _T("\nCheck Option:\nUse OriginalFirstThunk\nScan for Direct Imports\nFix Direct Imports UNIVERSAL\nUpdate header checksum\nCreate backup\nEnable debug privileges\nUse advanced IAT search\nRead APIs always from disk"), _T("Info"), MB_OK);
-                    TerminateProcess(pi.hProcess, 0);
-                    CloseHandle(pi.hProcess);
-                    CloseHandle(pi.hThread);
-                    return 0;
+                    _stprintf_s(cmdLine, _T("\"%s\" -pid %d"), pdPath, processId);
+
+                    _TCHAR dumpDir[MAX_PATH] = _T("DUMP");
+
+                    if (!PathFileExists(dumpDir)) {
+                        // If the directory doesn't exist, create it
+                        if (!CreateDirectory(dumpDir, NULL)) {
+                            // If CreateDirectory fails, show an error message and return
+                            MessageBox(nullptr, _T("Failed to create dump directory."), _T("Error"), MB_OK);
+                            return 1;
+                        }
+
+
+                        if (CreateProcess(pdPath, cmdLine, NULL, NULL, FALSE, 0, NULL, dumpDir, &si, &pi));
+                        {
+                            MessageBox(nullptr, _T("DUMPED! If an error occurs, please dump it manually"), _T("Info"), MB_OK);
+                            TerminateProcess(pi.hProcess, 0);
+                            CloseHandle(pi.hProcess);
+                            CloseHandle(pi.hThread);
+                            return 0;
+                        }
+                    }
+                    else {
+                        // MessageBox(nullptr, _T("DUMP IT with SCYLLA! ") + _T(PathFindFileName(targetPath)) + _T(" PID: ") + std::to_wstring(processId) + _T("\nCheck Option:\nUse OriginalFirstThunk\nScan for Direct Imports\nFix Direct Imports UNIVERSAL\nUpdate header checksum\nCreate backup\nEnable debug privileges\nUse advanced IAT search\nRead APIs always from disk"), _T("Info"), MB_OK);
+                        TerminateProcess(pi.hProcess, 0);
+                        CloseHandle(pi.hProcess);
+                        CloseHandle(pi.hThread);
+                        return 0;
+                    }
                 }
             }
         }
