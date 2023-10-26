@@ -46,7 +46,7 @@ bool ModifyThreadsByProcessID(DWORD processId, bool suspend) {
 // Function to check if a specific module (clrjit.dll) is loaded in a process.
 bool IsClrjitDLLLoaded(DWORD processId) {
     // Create a snapshot of all loaded modules in the target process.
-    HANDLE moduleSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, processId);
+    HANDLE moduleSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
     if (moduleSnapshot == INVALID_HANDLE_VALUE) {
         return false;
     }
@@ -119,8 +119,8 @@ int main(int argc, char* argv[]) {
                 ModifyThreadsByProcessID(processId, suspendThreads);
                 std::wcout << L"Found clrjit.dll -> LOADED .NET" << std::endl;
                
-                    if (Dump(targetPath, pdPath, suspendThreads, processId)) 
-                    {
+                if (Dump(targetPath, pdPath, suspendThreads, processId))
+                {
 
                     // Terminate the process if the dump is successful.
                     TerminateProcess(pi.hProcess, 0);
@@ -128,6 +128,7 @@ int main(int argc, char* argv[]) {
                     CloseHandle(pi.hThread);
                     return 0;
                 }
+                
             }
         }
     }
